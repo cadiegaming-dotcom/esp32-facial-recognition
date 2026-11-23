@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ESP32 Facial Recognition</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            background: #eeeeee;
+            padding: 15px;
+        }
+
+        video {
+            width: 100%;
+            max-width: 400px;
+            border: 3px solid black;
+            border-radius: 10px;
+        }
+
+        button {
+            padding: 15px;
+            margin: 8px;
+            font-size: 16px;
+        }
+
+        #status {
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        canvas {
+            display: none;
+        }
+    </style>
+
+    <script src="edge-impulse-standalone.js"></script>
+    <script src="run-impulse.js"></script>
+</head>
+
+<body>
+
+    <h2>ESP32 Facial Recognition</h2>
+
+    <video id="camera" autoplay playsinline muted></video>
+
+    <canvas id="canvas" width="96" height="96"></canvas>
+
+    <br>
+
+    <button onclick="startCamera()">START CAMERA</button>
+    <button onclick="stopCamera()">STOP CAMERA</button>
+
+    <p id="status">Waiting to start...</p>
+    <p id="result">Recognition: None</p>
+
+<script>
+
+let classifier;
+let cameraStream;
+let running = false;
+let lastSent = "";
+
+const ESP32_IP = "192.168.68.124";
+
+// Change this to your ESP32 IP address.
+
+const video = document.getElementById("camera");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+async function initializeModel() {
+
+    document.getElementById("status").innerText =
+        "Loading AI model...";
+
+    try {
+        classifier = new EdgeImpulseClassifier();
+
+        await classifier.init();
+
+        document.getElementById("status").innerText =
+            "AI model ready. Start camera.";
+
+    } catch (error) {
+        document.getElementById("status").innerText =
+            "Model error: " + error.message;
+
+        console.error(error);
+    }
+}
+
+async function startCamera() {
+
+    try {
+
+        if (!classifier) {
+            await initializeModel();
+        }
+
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                facingMode: "user"
+            },
+            audio: false
+        });
+
+        video.srcObject = cameraStream;
+
+        await video.play();
+
+        running = true;
+
+        document.getElementById("status").innerText =
+            "Camera started. Recognizing...";
+
+        recognizeFace();
+
+    } catch (error) {
+
+        document.getElementById("status").innerText =
+            "Camera error: " + error.message;
+
+        console.error(error);
+    }
+}
+
+function stopCamera() {
+
+    running = false;
+
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+    }
+
+    video.srcObject = null;
+
+    document.getElementById("status").innerText =
+        "Camera stopped.";
+}
+
+function recognizeFace() {
+
+    if (!running) return;
+
+    if (video.readyState >= 2) {
+
+        // Center-crop the camera image into a square.
+        const size = Math.min(video.videoWidth, video.videoHeight);
+        const sx = (video.videoWidth - size) / 2;
+        const sy = (video.videoHeight - size) / 2;
+
+        ctx.drawImage(
+            video,
+            sx, sy, size, size,
+            0, 0, 96, 96
+        );
+
+        const imageData = ctx.getImageData(0, 0, 96, 96);
+        const pixels = imageData.data;
+
+        let features = [];
+
+        // Convert RGBA pixels into RGB features.
+        for (let i = 0; i < pixels.length; i += 4) {
+            features.push(pixels[i]);
+            features.push(pixels[i + 1]);
+            features.push(pixels[i + 2]);
+        }
+
+        runClassification(features);
+    }
+
+    setTimeout(recognizeFace, 1000);
+}
+
+async function runClassification(features) {
+
+    try {
+
+        const output = await classifier.classify(features);
+
+        if (!output || !output.results || output.results.length === 0) {
+            return;
+        }
+
+        let best = output.results.reduce((a, b) =>
+            a.value > b.value ? a : b
+        );
+
+        let label = best.label.toUpperCase();
+        let confidence = best.value;
+
+        let finalLabel = "UNKNOWN";
+
+        if (confidence >= 0.70) {
+
+            if (label === "JOSHI") {
+                finalLabel = "PERSON1";
+            }
+
+            else if (label === "RHICK ASHLEY P") {
+                finalLabel = "PERSON2";
+            }
+        }
+
+        document.getElementById("result").innerText =
+            "Recognition: " + finalLabel +
+            " (" + (confidence * 100).toFixed(1) + "%)";
+
+        if (finalLabel !== lastSent) {
+            sendToESP32(finalLabel);
+            lastSent = finalLabel;
+        }
+
+    } catch (error) {
+
+        document.getElementById("status").innerText =
+            "Recognition error: " + error.message;
+
+        console.error(error);
+    }
+}
+
+function sendToESP32(label) {
+
+    const url = "http://" + ESP32_IP +
+        "/result?label=" + encodeURIComponent(label);
+
+    fetch(url, {
+        method: "GET",
+        mode: "no-cors"
+    }).catch(error => {
+        console.error("ESP32 connection error:", error);
+    });
+}
+
+initializeModel();
+
+</script>
+
+</body>
+</html>
